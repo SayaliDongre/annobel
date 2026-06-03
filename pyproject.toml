@@ -30,6 +30,7 @@ dependencies = [
     "ultralytics>=8.0.0",
     "pillow>=9.0.0",
     "mediapipe>=0.10.0",
+    "numpy<2.0.0",
 ]
 
 [tool.setuptools.packages.find]
