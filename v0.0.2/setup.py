@@ -7,7 +7,7 @@ readme = (this_dir / "README.md").read_text(encoding="utf-8") if (this_dir / "RE
 
 setup(
     name="annobel",
-    version="0.0.4",
+    version="0.0.2",
     description="Automatic + manual YOLO bounding box annotation tool (GUI + console)",
     long_description=readme,
     long_description_content_type="text/markdown",
@@ -22,7 +22,6 @@ setup(
     install_requires=[
         "ultralytics>=8.0.0",
         "pillow>=9.0.0",
-        "mediapipe>=0.10.0",
     ],
     extras_require={
         "dev": ["black", "flake8", "mypy", "pytest"],

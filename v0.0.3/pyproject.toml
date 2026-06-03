@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "annobel"
-version = "0.0.4"  # bumped from 0.0.3
+version = "0.0.3"  # bumped from 0.0.2
 description = "Automatic + manual YOLO bounding box annotation tool (GUI + console)"
 readme = "README.md"
 authors = [{name = "Sayali Dongre", email = "sayalidongre25@gmail.com"}]
@@ -29,7 +29,6 @@ classifiers = [
 dependencies = [
     "ultralytics>=8.0.0",
     "pillow>=9.0.0",
-    "mediapipe>=0.10.0",
 ]
 
 [tool.setuptools.packages.find]

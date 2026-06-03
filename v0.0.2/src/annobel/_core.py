@@ -22,7 +22,7 @@ CONFIG = {
     "classes_file": "",
     "conf": 0.25,
     "open_editor_after_detect": True,
-    "write_empty_detection_files": True,  # 0.0.3: now True by default to ensure 1:1 image:label mapping
+    "write_empty_detection_files": False,
     "display_max_width": 1000,
     "display_max_height": 800,
     "force_mode_dialog": True,
@@ -77,7 +77,6 @@ class Box:
     yc: float
     w: float
     h: float
-    landmarks: Optional[List[Tuple[float, float]]] = None
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -110,14 +109,11 @@ def load_yolo_label_file(label_path: Path) -> List[Box]:
     out: List[Box] = []
     for ln in txt.splitlines():
         p = ln.split()
-        if len(p) < 5: continue
+        if len(p) != 5: continue
         try:
             c = int(p[0]); xc = float(p[1]); yc = float(p[2]); w = float(p[3]); h = float(p[4])
             if not (0 <= xc <= 1 and 0 <= yc <= 1 and 0 < w <= 1 and 0 < h <= 1): continue
-            lms = None
-            if len(p) >= 7:
-                lms = [(float(p[i]), float(p[i+1])) for i in range(5, len(p) - (1 if len(p)%2==0 else 0), 2)]
-            out.append(Box(c, xc, yc, w, h, lms))
+            out.append(Box(c, xc, yc, w, h))
         except:
             pass
     return out
@@ -126,13 +122,9 @@ def save_yolo_label_file(label_path: Path, boxes: List[Box]):
     if not boxes:
         label_path.write_text("")
         return
-    lines = []
-    for b in boxes:
-        line = f"{b.cls} {b.xc:.6f} {b.yc:.6f} {b.w:.6f} {b.h:.6f}"
-        if b.landmarks:
-            line += " " + " ".join(f"{lx:.6f} {ly:.6f}" for lx, ly in b.landmarks)
-        lines.append(line)
-    label_path.write_text("\n".join(lines))
+    label_path.write_text(
+        "\n".join(f"{b.cls} {b.xc:.6f} {b.yc:.6f} {b.w:.6f} {b.h:.6f}" for b in boxes)
+    )
 
 ###############################################################################
 # GUI DIALOGS
@@ -154,7 +146,6 @@ def gui_mode_selection() -> Optional[str]:
     tk.Label(root, text="Select Annotation Mode", font=("Arial",12,"bold")).pack(pady=8)
     tk.Radiobutton(root, text="Automatic Annotation (YOLO detection)", variable=var, value="auto").pack(anchor="w", padx=20)
     tk.Radiobutton(root, text="Manual Annotation / Editing", variable=var, value="manual").pack(anchor="w", padx=20)
-    tk.Radiobutton(root, text="Auto Face Landmarks (MediaPipe)", variable=var, value="autoface").pack(anchor="w", padx=20)
     result={"mode":None}
     def ok(): result["mode"]=var.get(); root.destroy()
     def quit_():
@@ -355,7 +346,7 @@ def run_detection(model_path: str,
         return
     ensure_dir(labels_dir)
     write_empty=bool(CONFIG.get("write_empty_detection_files"))
-    print(f"[AUTO] Images: {len(imgs)} | Classes: {sorted(requested) if classes_filter_ids else 'ALL'} | Empty label files: {'ON' if write_empty else 'OFF'}")
+    print(f"[AUTO] Images: {len(imgs)} | Classes: {sorted(requested) if classes_filter_ids else 'ALL'}")
     for i,img_path in enumerate(imgs,1):
         res=model.predict(source=str(img_path), conf=conf, verbose=False)[0]
         lines=[]
@@ -367,120 +358,10 @@ def run_detection(model_path: str,
                     lines.append(f"{int(cid)} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
         out=labels_dir / f"{img_path.stem}.txt"
         if lines: out.write_text("\n".join(lines))
-        elif write_empty:  # 0.0.3 explicit creation path
-            if not out.exists():
-                out.write_text("")
+        elif write_empty: out.write_text("")
         if i % 10 == 0 or i <= 5 or i == len(imgs):
             print(f"[AUTO] {i}/{len(imgs)} {img_path.name} -> {len(lines)} boxes")
     print(f"[AUTO] Done in {time.time()-t0:.2f}s")
-
-
-###############################################################################
-# MEDIAPIPE LANDMARKS
-###############################################################################
-def run_mediapipe_landmarks(images_dir: Path, labels_dir: Path, classes_file: Path):
-    try:
-        import mediapipe as mp
-    except ImportError:
-        print("[ERROR] MediaPipe not installed. pip install mediapipe")
-        return
-
-    import cv2
-    import numpy as np
-
-    tk, _, messagebox = _tk_safe_import()
-    landmark_type = "48"
-    if tk is not None:
-        root = tk.Tk(); root.title("Landmark Configuration"); root.geometry("300x200")
-        var = tk.StringVar(value="48")
-        tk.Label(root, text="Select Landmark Scheme:", font=("Arial",11,"bold")).pack(pady=8)
-        tk.Radiobutton(root, text="5-point (Face Recognition)", variable=var, value="5").pack(anchor="w", padx=20)
-        tk.Radiobutton(root, text="48-point (Emotions/Features)", variable=var, value="48").pack(anchor="w", padx=20)
-        tk.Radiobutton(root, text="468-point (Full Mesh)", variable=var, value="468").pack(anchor="w", padx=20)
-        def ok(): root.destroy()
-        tk.Button(root, text="OK", command=ok, width=12).pack(pady=12)
-        root.mainloop()
-        landmark_type = var.get()
-    else:
-        print("Select Landmark Scheme: 5, 48, 468 [default 48]:")
-        ans = input().strip()
-        if ans in ("5", "48", "468"): landmark_type = ans
-
-    # Indices mapping
-    # 5-point: eyes(2), nose(1), mouth(2) approx
-    idx_5 = [33, 263, 1, 61, 291]
-    # 48-point: lips, eyes, eyebrows, nose outline
-    idx_48 = [
-        # Lips (20)
-        61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88,
-        # Right Eye (6)
-        33, 7, 163, 144, 145, 153,
-        # Left Eye (6)
-        263, 249, 390, 373, 374, 380,
-        # Right Eyebrow (5)
-        70, 63, 105, 66, 107,
-        # Left Eyebrow (5)
-        336, 296, 334, 293, 300,
-        # Nose (6)
-        1, 2, 98, 327, 168, 197
-    ]
-
-    selected_indices = None
-    if landmark_type == "5": selected_indices = idx_5
-    elif landmark_type == "48": selected_indices = idx_48
-
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=10, min_detection_confidence=0.5)
-
-    class_names = read_classes(classes_file)
-    if "face" not in class_names:
-        class_names.append("face")
-        write_classes(classes_file, class_names)
-    face_cls = class_names.index("face")
-
-    imgs = collect_images(images_dir)
-    print(f"[AUTOFACE] Processing {len(imgs)} images...")
-    for i, img_path in enumerate(imgs, 1):
-        img_cv = cv2.imread(str(img_path))
-        if img_cv is None: continue
-        h, w, _ = img_cv.shape
-        rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-        res = face_mesh.process(rgb)
-        
-        boxes = []
-        if res.multi_face_landmarks:
-            for face_lms in res.multi_face_landmarks:
-                xs = [lm.x for lm in face_lms.landmark]
-                ys = [lm.y for lm in face_lms.landmark]
-                min_x, max_x = min(xs), max(xs)
-                min_y, max_y = min(ys), max(ys)
-                xc = (min_x + max_x) / 2
-                yc = (min_y + max_y) / 2
-                bw = max_x - min_x
-                bh = max_y - min_y
-                
-                # add margin
-                xc = max(0.0, min(1.0, xc))
-                yc = max(0.0, min(1.0, yc))
-                bw = min(1.0, bw * 1.2)
-                bh = min(1.0, bh * 1.2)
-                
-                lms = []
-                if selected_indices:
-                    for idx in selected_indices:
-                        if idx < len(face_lms.landmark):
-                            lms.append((face_lms.landmark[idx].x, face_lms.landmark[idx].y))
-                else:
-                    for lm in face_lms.landmark:
-                        lms.append((lm.x, lm.y))
-                        
-                boxes.append(Box(face_cls, xc, yc, bw, bh, lms))
-                
-        out = labels_dir / f"{img_path.stem}.txt"
-        save_yolo_label_file(out, boxes)
-        if i % 10 == 0 or i <= 5:
-            print(f"[AUTOFACE] {i}/{len(imgs)} {img_path.name} -> {len(boxes)} faces")
-    print("[AUTOFACE] Done.")
 
 ###############################################################################
 # EDITOR
@@ -643,20 +524,6 @@ class TkLabelEditor:
                     c.create_rectangle(hx-self.HANDLE_SIZE/2,hy-self.HANDLE_SIZE/2,
                                        hx+self.HANDLE_SIZE/2,hy+self.HANDLE_SIZE/2,
                                        outline="orange",fill="black")
-            if b.landmarks:
-                for lx, ly in b.landmarks:
-                    lx_disp = lx * self.orig_w * self.scale + self.off_x
-                    ly_disp = ly * self.orig_h * self.scale + self.off_y
-                    c.create_oval(lx_disp-3, ly_disp-3, lx_disp+3, ly_disp+3, outline="red", fill="red")
-        
-        # also draw for non-selected boxes
-        for i, b in enumerate(self.boxes):
-            if i == self.selected: continue
-            if getattr(b, 'landmarks', None):
-                for lx, ly in b.landmarks:
-                    lx_disp = lx * self.orig_w * self.scale + self.off_x
-                    ly_disp = ly * self.orig_h * self.scale + self.off_y
-                    c.create_oval(lx_disp-2, ly_disp-2, lx_disp+2, ly_disp+2, outline="magenta", fill="magenta")
         if self.drawing:
             c.create_rectangle(self.start_x,self.start_y,self.curr_x,self.curr_y,
                                outline="lime",dash=(4,2),width=1)
@@ -679,16 +546,9 @@ class TkLabelEditor:
         xm=(x1+x2)/2; ym=(y1+y2)/2
         return [(x1,y1),(xm,y1),(x2,y1),(x2,ym),(x2,y2),(xm,y2),(x1,y2),(x1,ym)]
 
-    def which_handle(self,x,y,x1,y1,x2,y2, b=None):
+    def which_handle(self,x,y,x1,y1,x2,y2):
         tags=['nw','n','ne','e','se','s','sw','w']
         hs=self.HANDLE_SIZE
-        # Check landmarks first
-        if b and getattr(b, 'landmarks', None):
-            for i, (lx, ly) in enumerate(b.landmarks):
-                lx_disp = lx * self.orig_w * self.scale + self.off_x
-                ly_disp = ly * self.orig_h * self.scale + self.off_y
-                if abs(x-lx_disp)<=hs and abs(y-ly_disp)<=hs: return f'lm_{i}'
-        
         for name,(hx,hy) in zip(tags,self.handle_points(x1,y1,x2,y2)):
             if abs(x-hx)<=hs and abs(y-hy)<=hs: return name
         if x1<=x<=x2 and y1<=y<=y2: return 'move'
@@ -718,7 +578,7 @@ class TkLabelEditor:
         if hit is not None:
             self.selected=hit
             x1,y1,x2,y2=self.norm_to_disp(self.boxes[hit])
-            h=self.which_handle(x,y,x1,y1,x2,y2, self.boxes[hit])
+            h=self.which_handle(x,y,x1,y1,x2,y2)
             if h=='move':
                 self.dragging=True
                 self.press_x=x; self.press_y=y
@@ -755,17 +615,6 @@ class TkLabelEditor:
                 b=self.boxes[self.selected]; b.xc=xc; b.yc=yc; b.w=bw; b.h=bh
             self.refresh_canvas()
         elif self.resizing and self.selected is not None:
-            if self.resize_handle.startswith('lm_'):
-                lm_idx = int(self.resize_handle.split('_')[1])
-                inv = 1 / self.scale
-                nx = max(0, min(self.orig_w, (x - self.off_x) * inv)) / self.orig_w
-                ny = max(0, min(self.orig_h, (y - self.off_y) * inv)) / self.orig_h
-                b = self.boxes[self.selected]
-                if b.landmarks:
-                    b.landmarks[lm_idx] = (nx, ny)
-                self.refresh_canvas()
-                return
-
             ox1,oy1,ox2,oy2=self.orig_box_disp
             nx1,ny1,nx2,ny2=ox1,oy1,ox2,oy2
             h=self.resize_handle
@@ -1000,12 +849,6 @@ def run_mode(mode: str):
         editor=TkLabelEditor(images_dir, labels_dir, classes_file)
         while editor.loop(): return True
         return False
-    elif mode=="autoface":
-        run_mediapipe_landmarks(images_dir, labels_dir, classes_file)
-        if CONFIG.get("open_editor_after_detect"):
-            editor=TkLabelEditor(images_dir, labels_dir, classes_file)
-            while editor.loop(): return True
-        return True
     return False
 
 def main():
@@ -1031,10 +874,6 @@ def main():
             if not CONFIG["classes_file"]:
                 CONFIG["classes_file"]=str(Path(CONFIG["labels_dir"])/"classes.txt")
             gui_initial_class_editor(Path(CONFIG["classes_file"]), "auto", model_class_names=model_names)
-        elif CONFIG["mode"]=="autoface":
-            if not CONFIG["classes_file"]:
-                CONFIG["classes_file"]=str(Path(CONFIG["labels_dir"])/"classes.txt")
-            gui_initial_class_editor(Path(CONFIG["classes_file"]), "manual")
         else:
             if not CONFIG["classes_file"]:
                 CONFIG["classes_file"]=str(Path(CONFIG["labels_dir"])/"classes.txt")
